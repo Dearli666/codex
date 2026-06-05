@@ -13,6 +13,7 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::function_call_output_content_items_to_text;
+use codex_secrets::redact_secrets;
 use codex_tools::LoadableToolSpec;
 use codex_tools::ToolName;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -386,7 +387,7 @@ impl ToolOutput for ExecCommandToolOutput {
             original_token_count: self.original_token_count,
             output: match self.max_output_tokens {
                 Some(max_tokens) => self.truncated_output(max_tokens),
-                None => String::from_utf8_lossy(&self.raw_output).to_string(),
+                None => self.redacted_output_text(),
             },
         };
 
@@ -402,8 +403,12 @@ impl ExecCommandToolOutput {
     }
 
     pub(crate) fn truncated_output(&self, max_tokens: usize) -> String {
-        let text = String::from_utf8_lossy(&self.raw_output).to_string();
+        let text = self.redacted_output_text();
         formatted_truncate_text(&text, TruncationPolicy::Tokens(max_tokens))
+    }
+
+    fn redacted_output_text(&self) -> String {
+        redact_secrets(String::from_utf8_lossy(&self.raw_output).to_string())
     }
 
     fn response_text(&self) -> String {

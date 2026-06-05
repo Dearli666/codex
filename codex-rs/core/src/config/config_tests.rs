@@ -3047,6 +3047,102 @@ async fn load_workspace_permission_profile(
     .await
 }
 
+fn deny_glob_entry_for(base: &Path, glob: &str) -> FileSystemSandboxEntry {
+    FileSystemSandboxEntry {
+        path: FileSystemPath::GlobPattern {
+            pattern: AbsolutePathBuf::resolve_path_against_base(glob, base)
+                .to_string_lossy()
+                .into_owned(),
+        },
+        access: FileSystemAccessMode::Deny,
+    }
+}
+
+#[tokio::test]
+async fn default_workspace_permissions_deny_read_common_secret_files() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    let extra_root = TempDir::new()?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            additional_writable_roots: vec![extra_root.path().to_path_buf()],
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+
+    let policy = config.permissions.file_system_sandbox_policy();
+    assert!(
+        policy
+            .entries
+            .contains(&deny_glob_entry_for(cwd.path(), "**/.env"))
+    );
+    assert!(
+        policy
+            .entries
+            .contains(&deny_glob_entry_for(cwd.path(), "**/.aws/credentials"))
+    );
+    assert!(
+        policy
+            .entries
+            .contains(&deny_glob_entry_for(cwd.path(), "**/*.pem"))
+    );
+    assert!(
+        policy
+            .entries
+            .contains(&deny_glob_entry_for(extra_root.path(), "**/.env"))
+    );
+    if let Some(home_dir) = dirs::home_dir() {
+        assert!(
+            policy
+                .entries
+                .contains(&deny_glob_entry_for(&home_dir, ".ssh/id_ed25519"))
+        );
+        assert!(
+            policy
+                .entries
+                .contains(&deny_glob_entry_for(&home_dir, ".aws/credentials"))
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn danger_full_access_does_not_get_default_secret_deny_reads() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            default_permissions: Some(BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS.to_string()),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(
+        !config
+            .permissions
+            .file_system_sandbox_policy()
+            .entries
+            .contains(&deny_glob_entry_for(cwd.path(), "**/.env"))
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn permissions_profiles_allow_unknown_special_paths() -> std::io::Result<()> {
     let config = load_workspace_permission_profile(PermissionProfileToml {
