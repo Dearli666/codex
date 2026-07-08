@@ -21,6 +21,7 @@ use crate::session::turn_context::TurnContext;
 use codex_features::Feature;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::openai_models::ToolMode;
+use codex_secrets::redact_secrets;
 use codex_tools::ToolName;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::formatted_truncate_text;
@@ -81,7 +82,7 @@ pub fn format_exec_output_for_model(
     // round to 1 decimal place
     let duration_seconds = ((exec_output.duration.as_secs_f32()) * 10.0).round() / 10.0;
 
-    let content = build_content_with_timeout(exec_output);
+    let content = redact_secrets(build_content_with_timeout(exec_output));
 
     let total_lines = content.lines().count();
 
@@ -105,7 +106,7 @@ pub fn format_exec_output_str(
     exec_output: &ExecToolCallOutput,
     truncation_policy: TruncationPolicy,
 ) -> String {
-    let content = build_content_with_timeout(exec_output);
+    let content = redact_secrets(build_content_with_timeout(exec_output));
 
     // Truncate for model consumption before serialization.
     formatted_truncate_text(&content, truncation_policy)
@@ -121,5 +122,45 @@ fn build_content_with_timeout(exec_output: &ExecToolCallOutput) -> String {
         )
     } else {
         exec_output.aggregated_output.text.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use codex_protocol::exec_output::ExecToolCallOutput;
+    use codex_protocol::exec_output::StreamOutput;
+    use codex_utils_output_truncation::TruncationPolicy;
+
+    use super::format_exec_output_for_model;
+    use super::format_exec_output_str;
+
+    fn exec_output(text: &str) -> ExecToolCallOutput {
+        ExecToolCallOutput {
+            exit_code: 0,
+            stdout: StreamOutput::new(text.to_string()),
+            stderr: StreamOutput::new(String::new()),
+            aggregated_output: StreamOutput::new(text.to_string()),
+            duration: Duration::from_millis(10),
+            timed_out: false,
+        }
+    }
+
+    #[test]
+    fn legacy_exec_formatters_redact_secrets_before_model_output() {
+        let output = exec_output(
+            "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz\n-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----",
+        );
+
+        let formatted = format_exec_output_for_model(&output, TruncationPolicy::Tokens(10_000));
+        let compact = format_exec_output_str(&output, TruncationPolicy::Tokens(10_000));
+
+        for text in [formatted, compact] {
+            assert!(!text.contains("sk-abcdefghijklmnopqrstuvwxyz"));
+            assert!(!text.contains("BEGIN PRIVATE KEY"));
+            assert!(text.contains("[REDACTED_SECRET]"));
+            assert!(text.contains("[REDACTED_PRIVATE_KEY]"));
+        }
     }
 }

@@ -2393,6 +2393,103 @@ fn apply_managed_filesystem_constraints(
     }
 }
 
+const DEFAULT_SECRET_DENY_READ_GLOBS: &[&str] = &[
+    ".env",
+    "**/.env",
+    ".env.*",
+    "**/.env.*",
+    "*.pem",
+    "**/*.pem",
+    "*.key",
+    "**/*.key",
+    "*.p12",
+    "**/*.p12",
+    "*.pfx",
+    "**/*.pfx",
+    "id_rsa",
+    "**/id_rsa",
+    "id_dsa",
+    "**/id_dsa",
+    "id_ecdsa",
+    "**/id_ecdsa",
+    "id_ed25519",
+    "**/id_ed25519",
+    ".npmrc",
+    "**/.npmrc",
+    ".pypirc",
+    "**/.pypirc",
+    ".netrc",
+    "**/.netrc",
+    ".aws/credentials",
+    "**/.aws/credentials",
+    ".azure/**",
+    "**/.azure/**",
+    ".config/gcloud/**",
+    "**/.config/gcloud/**",
+    "secrets/**",
+    "**/secrets/**",
+];
+
+const DEFAULT_HOME_SECRET_DENY_READ_GLOBS: &[&str] = &[
+    ".ssh/id_rsa",
+    ".ssh/id_dsa",
+    ".ssh/id_ecdsa",
+    ".ssh/id_ed25519",
+    ".aws/credentials",
+    ".azure/**",
+    ".config/gcloud/**",
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
+];
+
+fn apply_default_secret_filesystem_constraints(
+    file_system_sandbox_policy: &mut FileSystemSandboxPolicy,
+    workspace_roots: &[AbsolutePathBuf],
+    permission_profile: &PermissionProfile,
+) {
+    match sandbox_mode_requirement_for_permission_profile(permission_profile) {
+        SandboxModeRequirement::ReadOnly | SandboxModeRequirement::WorkspaceWrite => {}
+        SandboxModeRequirement::DangerFullAccess | SandboxModeRequirement::ExternalSandbox => {
+            return;
+        }
+    }
+
+    for workspace_root in workspace_roots {
+        for glob in DEFAULT_SECRET_DENY_READ_GLOBS {
+            push_default_deny_read_glob(file_system_sandbox_policy, workspace_root.as_path(), glob);
+        }
+    }
+
+    if let Some(home_dir) = dirs::home_dir() {
+        for glob in DEFAULT_HOME_SECRET_DENY_READ_GLOBS {
+            push_default_deny_read_glob(file_system_sandbox_policy, &home_dir, glob);
+        }
+    }
+}
+
+fn push_default_deny_read_glob(
+    file_system_sandbox_policy: &mut FileSystemSandboxPolicy,
+    base: &Path,
+    glob: &str,
+) {
+    let deny_entry = codex_protocol::permissions::FileSystemSandboxEntry {
+        path: codex_protocol::permissions::FileSystemPath::GlobPattern {
+            pattern: AbsolutePathBuf::resolve_path_against_base(glob, base)
+                .to_string_lossy()
+                .into_owned(),
+        },
+        access: codex_protocol::permissions::FileSystemAccessMode::Deny,
+    };
+    if !file_system_sandbox_policy
+        .entries
+        .iter()
+        .any(|existing| existing == &deny_entry)
+    {
+        file_system_sandbox_policy.entries.push(deny_entry);
+    }
+}
+
 /// Optional overrides for user configuration (e.g., from CLI flags).
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
@@ -3763,6 +3860,14 @@ impl Config {
                 filesystem_requirements,
             );
         }
+        let mut default_secret_workspace_roots = workspace_roots.clone();
+        default_secret_workspace_roots.extend(profile_workspace_roots.iter().cloned());
+        dedupe_absolute_paths(&mut default_secret_workspace_roots);
+        apply_default_secret_filesystem_constraints(
+            &mut effective_file_system_sandbox_policy,
+            &default_secret_workspace_roots,
+            constrained_permission_profile.get(),
+        );
         let effective_file_system_sandbox_policy = effective_file_system_sandbox_policy
             .with_additional_readable_roots(resolved_cwd.as_path(), &helper_readable_roots);
         let effective_permission_profile = PermissionProfile::from_runtime_permissions_with_enforcement(

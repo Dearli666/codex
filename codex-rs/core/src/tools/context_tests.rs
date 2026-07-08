@@ -461,3 +461,51 @@ fn exec_command_tool_output_formats_truncated_response() {
         other => panic!("expected FunctionCallOutput, got {other:?}"),
     }
 }
+
+#[test]
+fn exec_command_tool_output_redacts_secrets_before_model_response() {
+    let payload = ToolPayload::Function {
+        arguments: "{}".to_string(),
+    };
+    let response = ExecCommandToolOutput {
+        event_call_id: "call-42".to_string(),
+        chunk_id: String::new(),
+        wall_time: std::time::Duration::from_millis(10),
+        raw_output: b"OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz\nAuthorization: Bearer abcdefghijklmnopqrstuvwxyz".to_vec(),
+        truncation_policy: TruncationPolicy::Tokens(10_000),
+        max_output_tokens: None,
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: None,
+        hook_command: Some("env".to_string()),
+    };
+
+    let response_item = response.to_response_item("call-42", &payload);
+    let post_tool_response = response.post_tool_use_response("call-42", &payload);
+    let code_mode_result = response.code_mode_result(&payload);
+
+    match response_item {
+        ResponseInputItem::FunctionCallOutput { output, .. } => {
+            let text = output
+                .body
+                .to_text()
+                .expect("exec output should serialize as text");
+            assert!(!text.contains("sk-abcdefghijklmnopqrstuvwxyz"));
+            assert!(!text.contains("abcdefghijklmnopqrstuvwxyz"));
+            assert!(text.contains("[REDACTED_SECRET]"));
+        }
+        other => panic!("expected FunctionCallOutput, got {other:?}"),
+    }
+
+    let post_tool_response = post_tool_response.expect("terminal exec should emit hook response");
+    assert!(
+        !post_tool_response
+            .to_string()
+            .contains("sk-abcdefghijklmnopqrstuvwxyz")
+    );
+    assert!(
+        !code_mode_result
+            .to_string()
+            .contains("sk-abcdefghijklmnopqrstuvwxyz")
+    );
+}
