@@ -3325,6 +3325,11 @@ async fn default_workspace_permissions_deny_read_common_secret_files() -> std::i
     assert!(
         policy
             .entries
+            .contains(&deny_glob_entry_for(cwd.path(), ".env"))
+    );
+    assert!(
+        policy
+            .entries
             .contains(&deny_glob_entry_for(cwd.path(), "**/.env"))
     );
     assert!(
@@ -3336,6 +3341,11 @@ async fn default_workspace_permissions_deny_read_common_secret_files() -> std::i
         policy
             .entries
             .contains(&deny_glob_entry_for(cwd.path(), "**/*.pem"))
+    );
+    assert!(
+        policy
+            .entries
+            .contains(&deny_glob_entry_for(extra_root.path(), ".env"))
     );
     assert!(
         policy
