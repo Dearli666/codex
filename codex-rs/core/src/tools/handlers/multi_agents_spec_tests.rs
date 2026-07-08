@@ -45,9 +45,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         ],
         agent_type_description: "role help".to_string(),
         hide_agent_type_model_reasoning: false,
-        include_usage_hint: true,
         usage_hint_text: None,
-        max_concurrent_threads_per_session: Some(4),
     });
 
     let ToolSpec::Function(ResponsesApiTool {
@@ -69,7 +67,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         .expect("spawn_agent should use object params");
     assert!(description.contains("Spawns an agent to work on the specified task."));
     assert!(description.contains("The spawned agent will have the same tools as you"));
-    assert!(description.contains("`max_concurrent_threads_per_session = 4`"));
+    assert!(!description.contains("max_concurrent_threads_per_session"));
     assert!(description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
     assert!(
         description
@@ -122,9 +120,7 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
         available_models: Vec::new(),
         agent_type_description: "role help".to_string(),
         hide_agent_type_model_reasoning: false,
-        include_usage_hint: true,
         usage_hint_text: None,
-        max_concurrent_threads_per_session: None,
     });
 
     let ToolSpec::Namespace(namespace) = tool else {
@@ -180,9 +176,7 @@ fn spawn_agent_tool_caps_visible_model_summaries() {
         ],
         agent_type_description: "role help".to_string(),
         hide_agent_type_model_reasoning: false,
-        include_usage_hint: true,
         usage_hint_text: None,
-        max_concurrent_threads_per_session: Some(4),
     });
 
     let ToolSpec::Function(ResponsesApiTool { description, .. }) = tool else {
@@ -225,9 +219,7 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
         available_models: vec![model_preset("visible", /*show_in_picker*/ true)],
         agent_type_description: "role help".to_string(),
         hide_agent_type_model_reasoning: true,
-        include_usage_hint: true,
         usage_hint_text: None,
-        max_concurrent_threads_per_session: Some(4),
     });
 
     let ToolSpec::Function(ResponsesApiTool {
@@ -296,6 +288,7 @@ fn send_message_tool_requires_message_and_has_no_output_schema() {
 fn followup_task_tool_requires_message_and_has_no_output_schema() {
     let ToolSpec::Function(ResponsesApiTool {
         name,
+        description,
         parameters,
         output_schema,
         ..
@@ -304,6 +297,10 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
         panic!("followup_task should be a function tool");
     };
     assert_eq!(name, "followup_task");
+    assert_eq!(
+        description,
+        "Send a follow-up task to an existing non-root target agent and trigger a turn if it is idle. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes."
+    );
     assert_eq!(
         parameters.schema_type,
         Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Object))

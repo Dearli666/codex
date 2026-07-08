@@ -24,6 +24,7 @@ impl ChatWidget {
                 duration_ms,
             } = turn;
             if matches!(status, TurnStatus::InProgress) {
+                self.turn_lifecycle.last_turn_id = Some(turn_id.clone());
                 self.last_non_retry_error = None;
                 self.on_task_started();
             }
@@ -149,13 +150,13 @@ impl ChatWidget {
             ThreadItem::ImageView { id: _, path } => {
                 self.on_view_image_tool_call(path);
             }
-            ThreadItem::ImageGeneration {
-                id,
-                revised_prompt,
-                saved_path,
-                ..
-            } => {
-                self.on_image_generation_end(id, revised_prompt, saved_path);
+            ThreadItem::ImageGeneration(item) => {
+                self.on_image_generation_end(
+                    item.id,
+                    item.status,
+                    item.revised_prompt,
+                    item.saved_path,
+                );
             }
             ThreadItem::EnteredReviewMode { review, .. } => {
                 if from_replay {
@@ -190,7 +191,9 @@ impl ChatWidget {
                 reasoning_effort,
                 agents_states,
             }),
+            item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             ThreadItem::DynamicToolCall { .. } => {}
+            ThreadItem::Sleep { .. } => {}
         }
 
         if matches!(replay_kind, Some(ReplayKind::ThreadSnapshot)) && turn_id.is_empty() {

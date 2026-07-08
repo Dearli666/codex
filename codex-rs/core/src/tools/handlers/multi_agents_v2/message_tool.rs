@@ -4,8 +4,9 @@
 //! resulting `InterAgentCommunication` should wake the target immediately.
 
 use super::*;
+use crate::agent_communication::AgentCommunicationContext;
+use crate::agent_communication::AgentCommunicationKind;
 use crate::tools::context::FunctionToolOutput;
-use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::protocol::InterAgentCommunication;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,7 +47,7 @@ pub(crate) struct FollowupTaskArgs {
     pub(crate) message: String,
 }
 
-fn message_content(message: String) -> Result<String, FunctionCallError> {
+pub(super) fn message_content(message: String) -> Result<String, FunctionCallError> {
     if message.trim().is_empty() {
         return Err(FunctionCallError::RespondToModel(
             "Empty message can't be sent to an agent".to_string(),
@@ -69,13 +70,12 @@ pub(crate) async fn handle_message_string_tool(
         call_id,
         ..
     } = invocation;
-    let prompt = String::new();
     let receiver_thread_id = resolve_agent_target(&session, &turn, &target).await?;
     let receiver_agent = session
         .services
         .agent_control
-        .get_agent_metadata(receiver_thread_id)
-        .unwrap_or_default();
+        .ensure_agent_known(receiver_thread_id)
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     if mode == MessageDeliveryMode::TriggerTurn
         && receiver_agent
             .agent_path
@@ -86,55 +86,45 @@ pub(crate) async fn handle_message_string_tool(
             "Follow-up tasks can't target the root agent".to_string(),
         ));
     }
-    session
-        .send_event(
-            &turn,
-            CollabAgentInteractionBeginEvent {
-                call_id: call_id.clone(),
-                started_at_ms: now_unix_timestamp_ms(),
-                sender_thread_id: session.thread_id,
-                receiver_thread_id,
-                prompt: prompt.clone(),
-            }
-            .into(),
-        )
-        .await;
     let receiver_agent_path = receiver_agent.agent_path.clone().ok_or_else(|| {
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
+    let resume_config = build_agent_resume_config(turn.as_ref())?;
+    session
+        .services
+        .agent_control
+        .ensure_v2_agent_loaded(resume_config, receiver_thread_id)
+        .await
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     let author = turn
         .session_source
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
-    let communication = communication_from_tool_message(author, receiver_agent_path, message);
+    let communication =
+        communication_from_tool_message(author, receiver_agent_path.clone(), message);
+    let kind = match mode {
+        MessageDeliveryMode::QueueOnly => AgentCommunicationKind::Message,
+        MessageDeliveryMode::TriggerTurn => AgentCommunicationKind::Followup,
+    };
+    let context = AgentCommunicationContext::new(kind, session.thread_id);
     let result = session
         .services
         .agent_control
-        .send_inter_agent_communication(receiver_thread_id, mode.apply(communication))
+        .send_inter_agent_communication(receiver_thread_id, mode.apply(communication), context)
         .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err));
-    let status = session
-        .services
-        .agent_control
-        .get_status(receiver_thread_id)
-        .await;
-    session
-        .send_event(
-            &turn,
-            CollabAgentInteractionEndEvent {
-                call_id,
-                completed_at_ms: now_unix_timestamp_ms(),
-                sender_thread_id: session.thread_id,
-                receiver_thread_id,
-                receiver_agent_nickname: receiver_agent.agent_nickname,
-                receiver_agent_role: receiver_agent.agent_role,
-                prompt,
-                status,
-            }
-            .into(),
-        )
-        .await;
     result?;
+    emit_sub_agent_activity(
+        &session,
+        &turn,
+        SubAgentActivityItem {
+            id: call_id,
+            agent_thread_id: receiver_thread_id,
+            agent_path: receiver_agent_path,
+            kind: SubAgentActivityKind::Interacted,
+        },
+    )
+    .await;
 
     Ok(FunctionToolOutput::from_text(String::new(), Some(true)))
 }

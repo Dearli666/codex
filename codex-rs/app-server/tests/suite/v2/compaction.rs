@@ -5,8 +5,6 @@
 //! 2) Act: start a thread and submit multiple turns to trigger auto-compaction.
 //! 3) Assert: verify item/started + item/completed notifications for context compaction.
 
-#![expect(clippy::expect_used)]
-
 use anyhow::Result;
 use app_test_support::ChatGptAuthFixture;
 use app_test_support::TestAppServer;
@@ -29,6 +27,7 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_features::Feature;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use core_test_support::responses;
@@ -82,7 +81,11 @@ async fn auto_compaction_local_emits_started_and_completed_items() -> Result<()>
         COMPACT_PROMPT,
     )?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let thread_id = start_thread(&mut mcp).await?;
@@ -135,9 +138,12 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
                 text: "REMOTE_COMPACT_SUMMARY".to_string(),
             }],
             phase: None,
+            internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::Compaction {
+            id: None,
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
+            internal_chat_message_metadata_passthrough: None,
         },
     ];
     let compact_mock = responses::mount_compact_json_once(
@@ -150,7 +156,7 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
     write_mock_responses_config_toml(
         codex_home.path(),
         &server.uri(),
-        &BTreeMap::default(),
+        &BTreeMap::from([(Feature::RemoteCompactionV2, false)]),
         REMOTE_AUTO_COMPACT_LIMIT,
         Some(true),
         "mock_provider",
@@ -162,8 +168,12 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
         AuthCredentialsStoreMode::File,
     )?;
 
-    let mut mcp =
-        TestAppServer::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .build()
+        .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let thread_id = start_thread(&mut mcp).await?;
@@ -198,7 +208,7 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
                 .header("x-codex-turn-metadata")
                 .as_deref()
                 .map(parse_json_header)
-                .unwrap_or_else(|| panic!("turn request should include turn metadata"))
+                .expect("turn request should include turn metadata")
         })
         .collect::<Vec<_>>();
     for (request, metadata) in response_requests.iter().zip(&turn_metadata) {
@@ -220,7 +230,7 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
         .header("x-codex-turn-metadata")
         .as_deref()
         .map(parse_json_header)
-        .unwrap_or_else(|| panic!("compact request should include turn metadata"));
+        .expect("compact request should include turn metadata");
     assert_eq!(
         compact_metadata["request_kind"].as_str(),
         Some("compaction")
@@ -269,7 +279,11 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
         COMPACT_PROMPT,
     )?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let thread_id = start_thread(&mut mcp).await?;
@@ -319,7 +333,11 @@ async fn thread_compact_start_rejects_invalid_thread_id() -> Result<()> {
         COMPACT_PROMPT,
     )?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -355,7 +373,11 @@ async fn thread_compact_start_rejects_unknown_thread_id() -> Result<()> {
         COMPACT_PROMPT,
     )?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -467,5 +489,5 @@ async fn wait_for_context_compaction_completed(
 }
 
 fn parse_json_header(value: &str) -> serde_json::Value {
-    serde_json::from_str(value).unwrap_or_else(|err| panic!("turn metadata should be json: {err}"))
+    serde_json::from_str(value).expect("turn metadata should be JSON")
 }

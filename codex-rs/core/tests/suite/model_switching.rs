@@ -31,7 +31,9 @@ use core_test_support::responses::sse;
 use core_test_support::responses::sse_completed;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::TestCodex;
+use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
@@ -45,12 +47,11 @@ fn read_only_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) -
         turn_permission_fields(PermissionProfile::read_only(), test.cwd_path());
     Op::UserInput {
         items,
-        environments: None,
         final_output_json_schema: None,
         responsesapi_client_metadata: None,
         additional_context: Default::default(),
         thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-            cwd: Some(test.cwd_path().to_path_buf()),
+            environments: Some(local_selections(test.config.cwd.clone())),
             approval_policy: Some(AskForApproval::Never),
             sandbox_policy: Some(sandbox_policy),
             permission_profile,
@@ -123,6 +124,7 @@ fn test_model_info(
         upgrade: None,
         base_instructions: "base instructions".to_string(),
         model_messages: None,
+        include_skills_usage_instructions: false,
         supports_reasoning_summaries: false,
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,
@@ -136,6 +138,7 @@ fn test_model_info(
         context_window: Some(272_000),
         max_context_window: None,
         auto_compact_token_limit: None,
+        comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
     }
@@ -385,6 +388,46 @@ async fn unsupported_service_tier_is_omitted_from_http_turn() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unsupported_configured_service_tier_warns_at_session_start() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let model_slug = "test-no-tier-model";
+    let model = test_model_info(
+        model_slug,
+        model_slug,
+        "no service tiers",
+        default_input_modalities(),
+    );
+    let mut builder = test_codex()
+        .with_model(model_slug)
+        .with_config(move |config| {
+            config.service_tier = Some(ServiceTier::Flex.request_value().to_string());
+            config.model_catalog = Some(ModelsResponse {
+                models: vec![model],
+            });
+        });
+    let test = builder.build(&server).await?;
+
+    let warning = wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::Warning(warning)
+                if warning.message.contains("will be omitted from requests")
+        )
+    })
+    .await;
+    let EventMsg::Warning(warning) = warning else {
+        unreachable!("wait_for_event matched a warning")
+    };
+    assert_eq!(
+        warning.message,
+        "Configured service tier `flex` is not advertised as supported for model `test-no-tier-model` and will be omitted from requests."
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_service_tier_override_is_omitted_from_http_turn() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -505,7 +548,7 @@ async fn model_change_from_image_to_text_strips_prior_image_content() -> Result<
     let _ = models_manager
         .list_models(RefreshStrategy::OnlineIfUncached)
         .await;
-    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
+    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
         .to_string();
 
     test.codex
@@ -648,8 +691,8 @@ async fn generated_image_is_replayed_for_image_capable_models() -> Result<()> {
     );
     assert_eq!(
         image_generation_calls[0]["id"].as_str(),
-        Some("ig_123"),
-        "expected the original image generation call id to be preserved"
+        None,
+        "expected the image generation call id to be omitted"
     );
     assert_eq!(
         image_generation_calls[0]["result"].as_str(),
@@ -765,8 +808,8 @@ async fn model_change_from_generated_image_to_text_preserves_prior_generated_ima
     );
     assert_eq!(
         image_generation_calls[0]["id"].as_str(),
-        Some("ig_123"),
-        "second request should preserve the original generated image call id"
+        None,
+        "second request should omit the generated image call id"
     );
     assert_eq!(
         image_generation_calls[0]["result"].as_str(),
@@ -794,6 +837,8 @@ async fn model_change_from_generated_image_to_text_preserves_prior_generated_ima
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn thread_rollback_after_generated_image_drops_entire_image_turn_history() -> Result<()> {
+    // TODO(anp): Remove after generated-image artifacts use target-native paths.
+    skip_if_wine_exec!(Ok(()), "uses host-native generated-image artifact paths");
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::start().await;
@@ -944,6 +989,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
         upgrade: None,
         base_instructions: "base instructions".to_string(),
         model_messages: None,
+        include_skills_usage_instructions: false,
         supports_reasoning_summaries: false,
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,
@@ -957,6 +1003,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
         context_window: Some(large_context_window),
         max_context_window: None,
         auto_compact_token_limit: None,
+        comp_hash: None,
         effective_context_window_percent,
         experimental_supported_tools: Vec::new(),
     };

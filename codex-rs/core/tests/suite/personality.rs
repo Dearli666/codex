@@ -26,6 +26,7 @@ use core_test_support::responses::sse_completed;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
+use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
@@ -65,12 +66,11 @@ fn read_only_text_turn_with_personality(
             text: text.into(),
             text_elements: Vec::new(),
         }],
-        environments: None,
         final_output_json_schema: None,
         responsesapi_client_metadata: None,
         additional_context: Default::default(),
         thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-            cwd: Some(test.cwd_path().to_path_buf()),
+            environments: Some(local_selections(test.config.cwd.clone())),
             approval_policy: Some(approval_policy),
             sandbox_policy: Some(sandbox_policy),
             permission_profile,
@@ -573,7 +573,9 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
                 personality_friendly: Some(friendly_personality_message.to_string()),
                 personality_pragmatic: Some("Pragmatic variant".to_string()),
             }),
+            approvals: None,
         }),
+        include_skills_usage_instructions: false,
         supports_reasoning_summaries: false,
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,
@@ -587,6 +589,7 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
         context_window: Some(128_000),
         max_context_window: None,
         auto_compact_token_limit: None,
+        comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
         input_modalities: default_input_modalities(),
@@ -687,7 +690,9 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
                 personality_friendly: Some(remote_friendly_message.to_string()),
                 personality_pragmatic: Some(remote_pragmatic_message.to_string()),
             }),
+            approvals: None,
         }),
+        include_skills_usage_instructions: false,
         supports_reasoning_summaries: false,
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,
@@ -701,6 +706,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         context_window: Some(128_000),
         max_context_window: None,
         auto_compact_token_limit: None,
+        comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
         input_modalities: default_input_modalities(),
